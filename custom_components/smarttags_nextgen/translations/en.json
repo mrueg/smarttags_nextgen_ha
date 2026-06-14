@@ -1,22 +1,38 @@
 {
   "config": {
+    "error": {
+      "invalid_auth": "Invalid authentication",
+      "cannot_connect": "Failed to connect",
+      "empty_custom_region": "Please provide a custom region code (e.g., prd-eu, prd-us)",
+      "unknown": "Unexpected error"
+    },
     "step": {
       "user": {
         "title": "Samsung SmartTags Setup",
         "description": "Visit [SmartThings Find]({url}) and log in with your Samsung account.\n\n1. Open Developer Tools in your browser (F12).\n2. Navigate to the Application/Storage tab.\n3. Copy the **JSESSIONID** value.\n\n*Note: Make sure to copy the one from `smartthingsfind.samsung.com` (you might have others from different domains).* \n\nPaste your token below:",
         "data": {
-          "jsession_id": "JSESSIONID Token"
+          "jsession_id": "JSESSIONID Token",
+          "region": "Region",
+          "custom_region": "Custom Region (if 'Other' selected)"
         }
       }
     }
   },
   "options": {
+    "error": {
+      "invalid_auth": "Invalid authentication",
+      "cannot_connect": "Failed to connect",
+      "empty_custom_region": "Please provide a custom region code (e.g., prd-eu, prd-us)",
+      "unknown": "Unexpected error"
+    },
     "step": {
       "init": {
         "title": "Update JSESSIONID",
         "description": "If your session has expired or you are experiencing connection problems, you can update your token here.\n\nVisit [SmartThings Find]({url}) and log in with your Samsung account.\n\n1. Open Developer Tools in your browser (F12).\n2. Navigate to the Application/Storage tab.\n3. Copy the **JSESSIONID** value.\n\n*Note: Make sure to copy the one from `smartthingsfind.samsung.com`.*",
         "data": {
-          "jsession_id": "JSESSIONID Token"
+          "jsession_id": "JSESSIONID Token",
+          "region": "Region",
+          "custom_region": "Custom Region (if 'Other' selected)"
         }
       }
     }
