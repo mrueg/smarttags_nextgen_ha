@@ -217,6 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# AI Agents
+# AI Agent
 GEMINI.md
+init_output.txt
 .agents/
