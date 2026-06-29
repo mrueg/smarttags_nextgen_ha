@@ -5,7 +5,17 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+
+class CannotConnect(HomeAssistantError):
+    """Error to indicate we cannot connect."""
+
+
+class InvalidAuth(HomeAssistantError):
+    """Error to indicate there is invalid auth."""
+
 
 # Fixed: Added REGION_ASIA_2 to the source import parameters mapping
 from .const import DOMAIN, CONF_JSESSION_ID, CONF_REGION, REGION_EUROPE, REGION_US_GENERAL, REGION_ASIA, REGION_ASIA_2
@@ -23,11 +33,11 @@ async def validate_input(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str,
     # Pre-flight validation check executing a dynamic CSRF exchange
     success = await api.refresh_csrf_token()
     if not success:
-        raise config_entries.exceptions.InvalidAuth
+        raise InvalidAuth
         
     devices = await api.get_devices()
     if devices is None:
-        raise config_entries.exceptions.CannotConnect
+        raise CannotConnect
         
     return {"title": "SmartThings Find Account"}
 
@@ -59,9 +69,9 @@ class SmartTagsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 try:
                     info = await validate_input(self.hass, validation_data)
                     return self.async_create_entry(title=info["title"], data=validation_data)
-                except config_entries.exceptions.InvalidAuth:
+                except InvalidAuth:
                     errors["base"] = "invalid_auth"
-                except config_entries.exceptions.CannotConnect:
+                except CannotConnect:
                     errors["base"] = "cannot_connect"
                 except Exception:  # pylint: disable=broad-except
                     _LOGGER.exception("Unexpected exception occurred during validation")
@@ -137,9 +147,9 @@ class SmartTagsOptionsFlowHandler(config_entries.OptionsFlow):
                         self.config_entry, data=validation_data
                     )
                     return self.async_create_entry(title="", data={})
-                except config_entries.exceptions.InvalidAuth:
+                except InvalidAuth:
                     errors["base"] = "invalid_auth"
-                except config_entries.exceptions.CannotConnect:
+                except CannotConnect:
                     errors["base"] = "cannot_connect"
                 except Exception:  # pylint: disable=broad-except
                     _LOGGER.exception("Unexpected exception occurred during validation")
