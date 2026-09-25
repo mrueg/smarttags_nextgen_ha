@@ -3,7 +3,7 @@ import json
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.components.diagnostics import get_diagnostics_for_config_entry
 
-from .common import TAG_A, create_entry
+from .common import TAG_A, create_account_entry, create_entry
 
 
 async def test_diagnostics_redacts_private_data(hass, hass_client, mock_devices):
@@ -32,3 +32,20 @@ async def test_diagnostics_redacts_private_data(hass, hass_client, mock_devices)
         "extra_keys": ["gpsUtcDt"],
     }
     assert "3.0" not in dumped and "4.0" not in dumped
+
+
+async def test_diagnostics_redacts_account_credentials(hass, hass_client, mock_devices):
+    assert await async_setup_component(hass, "diagnostics", {})
+    mock_devices.append(TAG_A)
+    entry = create_account_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    diag = await get_diagnostics_for_config_entry(hass, hass_client, entry)
+
+    dumped = json.dumps(diag)
+    for secret in ("master-token", "me@example.com", "abcdef"):
+        assert secret not in dumped
+    for key in ("userauth_token", "user_id", "login_id", "device_id"):
+        assert diag["entry"]["data"][key] == "**REDACTED**"
+    assert diag["entry"]["data"]["auth_method"] == "account"
+    assert diag["entry"]["data"]["auth_server_url"] == "https://eu-auth2.samsungosp.com"

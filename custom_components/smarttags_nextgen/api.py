@@ -1,6 +1,6 @@
 import aiohttp
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Awaitable, Callable, Dict, Any, Optional, List
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,11 +32,19 @@ async def async_get_server_region(session: aiohttp.ClientSession) -> Optional[st
 
 
 class SmartTagsAPI:
-    def __init__(self, session: aiohttp.ClientSession, jsession_id: str, region: str):
+    def __init__(
+        self,
+        session: aiohttp.ClientSession,
+        jsession_id: Optional[str],
+        region: str,
+        session_factory: Optional[Callable[[], Awaitable[str]]] = None,
+    ):
         self.session = session
         self.jsession_id = jsession_id
         self.region = region  # Capture the region selected dynamically during config flow execution
         self.csrf_token: Optional[str] = None
+        # Creates a new JSESSIONID when the current one expires (Samsung account sign-in)
+        self._session_factory = session_factory
 
     @property
     def headers(self) -> Dict[str, str]:
@@ -60,6 +68,20 @@ class SmartTagsAPI:
         }
 
     async def refresh_csrf_token(self) -> None:
+        """Fetch a fresh CSRF token, creating a new session first if needed and possible."""
+        if self._session_factory is None:
+            await self._fetch_csrf_token()
+            return
+        if self.jsession_id is None:
+            self.jsession_id = await self._session_factory()
+        try:
+            await self._fetch_csrf_token()
+        except SmartTagsAuthError:
+            _LOGGER.debug("SmartThings Find session expired, creating a new one")
+            self.jsession_id = await self._session_factory()
+            await self._fetch_csrf_token()
+
+    async def _fetch_csrf_token(self) -> None:
         """Fetch a fresh CSRF token from the chkLogin endpoint."""
         url = "https://smartthingsfind.samsung.com/chkLogin.do"
         try:
