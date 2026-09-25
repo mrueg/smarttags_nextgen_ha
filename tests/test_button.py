@@ -5,14 +5,14 @@ import pytest
 from homeassistant.config_entries import SOURCE_REAUTH
 from homeassistant.exceptions import HomeAssistantError
 
-from custom_components.smarttags_nextgen.api import operation_status
 from custom_components.smarttags_nextgen.const import DOMAIN
 
 from .common import TAG_A, create_entry
 
 FIND = "https://smartthingsfind.samsung.com"
 ADD = f"{FIND}/dm/addOperation.do"
-RESULT = f"{FIND}/dm/getOperationResult.do"
+TAG_LOCATION = f"{FIND}/dm/getTagLocation.do"
+WAIT = "custom_components.smarttags_nextgen.coordinator.LOCATION_REQUEST_WAIT"
 
 
 async def _setup(hass, mock_devices):
@@ -36,7 +36,8 @@ async def test_buttons_created(hass, mock_devices):
 
 async def test_ring(hass, mock_devices, aioclient_mock):
     await _setup(hass, mock_devices)
-    aioclient_mock.post(ADD, json={"resultCode": "00", "reqId": "r1"})
+    # tags answer without a request id
+    aioclient_mock.post(ADD, json={"oprnType": "RING", "resultCode": "00"})
 
     await _press(hass, "button.keys_ring")
 
@@ -45,13 +46,19 @@ async def test_ring(hass, mock_devices, aioclient_mock):
     assert data == {"dvceId": "a", "operation": "RING", "usrId": 12345, "status": "start"}
 
 
+async def test_ring_power_saving(hass, mock_devices, aioclient_mock):
+    await _setup(hass, mock_devices)
+    aioclient_mock.post(ADD, json={"resultCode": "01", "powerSavingResultCode": "00"})
+    await _press(hass, "button.keys_ring")
+
+
 async def test_ring_rejected(hass, mock_devices, aioclient_mock):
     await _setup(hass, mock_devices)
-    aioclient_mock.post(ADD, json={"resultCode": "99"})
+    aioclient_mock.post(ADD, json={"resultCode": "01", "faultCode": "BIZ-3100"})
     with pytest.raises(HomeAssistantError) as err:
         await _press(hass, "button.keys_ring")
     assert err.value.translation_key == "operation_failed"
-    assert "RING" in err.value.translation_placeholders["error"]
+    assert err.value.translation_placeholders["error"] == "Samsung rejected the RING request (01, BIZ-3100)"
 
 
 async def test_ring_expired_session_starts_reauth(hass, mock_devices, aioclient_mock):
@@ -68,70 +75,51 @@ async def test_ring_expired_session_starts_reauth(hass, mock_devices, aioclient_
 
 async def test_refresh_location(hass, mock_devices, aioclient_mock):
     await _setup(hass, mock_devices)
-    aioclient_mock.post(ADD, json={"resultCode": "00", "reqId": "r1"})
+    aioclient_mock.post(ADD, json={"oprnType": "CHECK_CONNECTION_WITH_LOCATION", "resultCode": "00"})
     aioclient_mock.post(
-        RESULT,
+        TAG_LOCATION,
         json={
+            "resultCode": "00",
             "operation": [
-                # results of other requests are ignored
-                {"oprnType": "LOCATION", "reqId": "older", "oprnStsCd": "9000"},
-                {"oprnType": "LOCATION", "reqId": "r1", "oprnStsCd": "2800", "oprnResultCode": "1200"},
-            ]
+                {"oprnType": "OFFLINE_LOC", "latitude": "5.5", "longitude": "6.5", "extra": {"gpsUtcDt": "20260110120000"}},
+                {"oprnType": "CHECK_CONNECTION", "battery": "LOW"},
+            ],
         },
     )
-    fetch_state = mock_devices_state_fetch(hass)
-    calls_before = fetch_state.await_count
 
-    with patch("custom_components.smarttags_nextgen.coordinator.LOCATION_POLL_INTERVAL", 0):
+    with patch(WAIT, 0):
         await _press(hass, "button.keys_refresh_location")
-        # the location is awaited in a background task
+        # the location is fetched in a background task
         await hass.async_block_till_done(wait_background_tasks=True)
 
-    add, result = aioclient_mock.mock_calls
-    assert add[2] == {"dvceId": "a", "operation": "LOCATION", "usrId": 12345}
-    assert result[2] == {"dvceId": "a", "operation": ["LOCATION"], "userId": 12345}
-    # the tag state was fetched again once the location arrived
-    assert fetch_state.await_count > calls_before
+    add, location = aioclient_mock.mock_calls
+    assert add[2] == {"dvceId": "a", "operation": "CHECK_CONNECTION_WITH_LOCATION", "usrId": 12345}
+    # asks for locations newer than the one already known
+    assert location[2] == {"dvceId": "a", "latestTime": "20260102120000"}
+    state = hass.states.get("device_tracker.keys")
+    assert (state.attributes["latitude"], state.attributes["longitude"]) == (5.5, 6.5)
+    assert state.attributes["last_seen"] == "2026-01-10T12:00:00+00:00"
+    assert hass.states.get("sensor.keys_battery").state == "10"
 
 
-async def test_refresh_location_times_out(hass, mock_devices, aioclient_mock):
+async def test_refresh_location_keeps_newer_location(hass, mock_devices, aioclient_mock):
     await _setup(hass, mock_devices)
-    aioclient_mock.post(ADD, json={"resultCode": "00", "reqId": "r1"})
-    aioclient_mock.post(RESULT, json={"operation": [{"oprnType": "LOCATION", "reqId": "r1", "oprnStsCd": "1100"}]})
-    fetch_state = mock_devices_state_fetch(hass)
-    calls_before = fetch_state.await_count
-
-    with (
-        patch("custom_components.smarttags_nextgen.coordinator.LOCATION_POLL_INTERVAL", 0),
-        patch("custom_components.smarttags_nextgen.coordinator.LOCATION_TIMEOUT", 0.05),
-    ):
+    aioclient_mock.post(ADD, json={"resultCode": "00"})
+    aioclient_mock.post(
+        TAG_LOCATION,
+        json={"operation": [{"oprnType": "LOCATION", "latitude": "9", "longitude": "9", "extra": {"gpsUtcDt": "20250101000000"}}]},
+    )
+    with patch(WAIT, 0):
         await _press(hass, "button.keys_refresh_location")
-        # the location is awaited in a background task
         await hass.async_block_till_done(wait_background_tasks=True)
 
-    assert len(aioclient_mock.mock_calls) >= 2
-    # the entities are still updated with whatever the tag reported
-    assert fetch_state.await_count > calls_before
+    state = hass.states.get("device_tracker.keys")
+    assert (state.attributes["latitude"], state.attributes["longitude"]) == (3.0, 4.0)
 
 
-def mock_devices_state_fetch(hass):
-    """The mocked set_last_select of the mock_devices fixture."""
-    from custom_components.smarttags_nextgen.api import SmartTagsAPI
-
-    return SmartTagsAPI.set_last_select
-
-
-@pytest.mark.parametrize(
-    ("entry", "expected"),
-    [
-        ({"oprnStsCd": "2800", "oprnResultCode": "1200"}, "success"),
-        ({"oprnStsCd": "200"}, "success"),
-        ({"oprnStsCd": "1100"}, "pending"),
-        ({"oprnStsCd": "2100"}, "pending"),
-        ({}, "pending"),
-        ({"oprnStsCd": "2800", "oprnResultCode": "9999"}, "failed"),
-        ({"oprnStsCd": "9000"}, "failed"),
-    ],
-)
-def test_operation_status(entry, expected):
-    assert operation_status(entry) == expected
+async def test_refresh_location_rejected(hass, mock_devices, aioclient_mock):
+    await _setup(hass, mock_devices)
+    aioclient_mock.post(ADD, json={"resultCode": "01", "faultCode": "BIZ-3100"})
+    with pytest.raises(HomeAssistantError):
+        await _press(hass, "button.keys_refresh_location")
+    assert len(aioclient_mock.mock_calls) == 1
