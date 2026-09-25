@@ -123,6 +123,18 @@ class SmartTagsAPI:
         raise SmartTagsConnectionError(f"chkLogin answered with status {resp.status} but without a CSRF token")
 
     async def get_devices(self) -> List[Dict[str, Any]]:
+        """Fetch the list of all registered devices, creating a new session once if it was rejected."""
+        try:
+            return await self._fetch_devices()
+        except SmartTagsAuthError:
+            if self._session_factory is None:
+                raise
+            _LOGGER.debug("SmartThings Find rejected the session for the device list, creating a new one")
+            self.jsession_id = await self._session_factory()
+            await self._fetch_csrf_token()
+            return await self._fetch_devices()
+
+    async def _fetch_devices(self) -> List[Dict[str, Any]]:
         """Fetch the list of all registered devices."""
         if not self.csrf_token:
             raise SmartTagsConnectionError("Cannot fetch devices: CSRF token is missing or uninitialized")
