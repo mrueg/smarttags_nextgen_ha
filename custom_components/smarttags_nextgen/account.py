@@ -28,7 +28,7 @@ from cryptography.hazmat.primitives.serialization import load_der_public_key
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import SmartTagsAuthError, SmartTagsConnectionError
+from .api import SmartTagsAuthError, SmartTagsConnectionError, describe_error
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -161,7 +161,7 @@ async def async_start_sign_in(hass: HomeAssistant, device_id: str | None = None)
         async with session.get(ENTRY_POINT_URL, allow_redirects=False, timeout=REQUEST_TIMEOUT) as resp:
             entry = await _async_json(resp, "sign-in entry point")
     except (aiohttp.ClientError, TimeoutError, ValueError) as err:
-        raise SamsungSignInError(f"Could not reach Samsung account: {err!r}") from err
+        raise SamsungSignInError(f"Could not reach Samsung account: {describe_error(err)}") from err
 
     # A random identifier Samsung associates with this Home Assistant "device"; it is kept
     # with the credentials because the account token is bound to it
@@ -247,7 +247,7 @@ async def async_complete_sign_in(hass: HomeAssistant, pending: PendingSignIn, re
         ) as resp:
             result = await _async_json(resp, "account authentication")
     except (aiohttp.ClientError, TimeoutError, ValueError) as err:
-        raise SamsungSignInError(f"Could not reach Samsung account: {err!r}") from err
+        raise SamsungSignInError(f"Could not reach Samsung account: {describe_error(err)}") from err
 
     userauth_token = result.get("userauth_token") or result.get("userAuthToken")
     user_id = result.get("userId") or result.get("user_id")
@@ -260,6 +260,12 @@ async def async_complete_sign_in(hass: HomeAssistant, pending: PendingSignIn, re
         CONF_DEVICE_ID: pending.device_id,
         CONF_AUTH_SERVER_URL: auth_server,
     }
+
+
+def _describe_location(resp: aiohttp.ClientResponse) -> str:
+    """Host and path of a redirect, without the query that can contain codes."""
+    location = urllib.parse.urlparse(resp.headers.get("Location", ""))
+    return f"{location.scheme}://{location.netloc}{location.path}" if location.netloc else location.path or "none"
 
 
 def _session_cookie(resp: aiohttp.ClientResponse) -> str | None:
@@ -293,7 +299,9 @@ async def async_create_web_session(hass: HomeAssistant, credentials: Mapping[str
             if resp.status in (400, 401, 403):
                 raise SmartTagsAuthError(f"Samsung rejected the account token ({resp.status})")
             if resp.status != 200:
-                raise SmartTagsConnectionError(f"Samsung authorization answered with status {resp.status}")
+                raise SmartTagsConnectionError(
+                    f"Samsung authorization answered with status {resp.status} (redirect: {_describe_location(resp)})"
+                )
             data = await resp.json(content_type=None)
             if not isinstance(data, dict):
                 raise SmartTagsConnectionError("Samsung authorization returned an unexpected response")
@@ -333,15 +341,18 @@ async def async_create_web_session(hass: HomeAssistant, credentials: Mapping[str
             allow_redirects=False,
             timeout=REQUEST_TIMEOUT,
         ) as resp:
-            if resp.status == 302:
-                location = urllib.parse.urlparse(resp.headers.get("Location", ""))
+            if resp.status in (301, 302, 303, 307):
+                # A relative redirect stays on SmartThings Find
+                location = urllib.parse.urlparse(urllib.parse.urljoin(f"{FIND_URL}/", resp.headers.get("Location", "")))
                 if location.scheme != "https" or location.hostname != "smartthingsfind.samsung.com":
-                    raise SmartTagsConnectionError("SmartThings Find login redirected to an unexpected destination")
+                    raise SmartTagsConnectionError(
+                        f"SmartThings Find login redirected to an unexpected destination: {_describe_location(resp)}"
+                    )
             elif resp.status != 200:
                 raise SmartTagsConnectionError(f"SmartThings Find login answered with status {resp.status}")
             jsession_id = _session_cookie(resp)
     except (aiohttp.ClientError, TimeoutError, ValueError) as err:
-        raise SmartTagsConnectionError(f"Error creating a SmartThings Find session: {err!r}") from err
+        raise SmartTagsConnectionError(f"Error creating a SmartThings Find session: {describe_error(err)}") from err
 
     if not jsession_id:
         raise SmartTagsConnectionError("SmartThings Find login did not issue a session")

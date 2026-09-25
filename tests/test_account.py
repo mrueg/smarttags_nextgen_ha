@@ -225,3 +225,43 @@ async def test_create_web_session_errors(hass, aioclient_mock):
     aioclient_mock.get(f"{AUTH_SERVER}/auth/oauth2/v2/authorize", exc=TimeoutError())
     with pytest.raises(SmartTagsConnectionError):
         await async_create_web_session(hass, CREDENTIALS)
+
+
+async def test_create_web_session_relative_redirect(hass, aioclient_mock):
+    aioclient_mock.get(f"{AUTH_SERVER}/auth/oauth2/v2/authorize", json={"code": "web-code"})
+    _mock_web_login(aioclient_mock, location="/")
+    assert await async_create_web_session(hass, CREDENTIALS) == "new-session"
+
+
+async def test_create_web_session_error_hides_token(hass, aioclient_mock):
+    """Errors are logged by the config flow, so they must not contain the token from the URL."""
+    import aiohttp
+
+    aioclient_mock.get(
+        f"{AUTH_SERVER}/auth/oauth2/v2/authorize",
+        exc=aiohttp.ClientResponseError(
+            aiohttp.RequestInfo(
+                url=aiohttp.client.URL(f"{AUTH_SERVER}/auth/oauth2/v2/authorize?userauth_token=master-token"),
+                method="GET",
+                headers={},
+                real_url=aiohttp.client.URL(f"{AUTH_SERVER}/auth/oauth2/v2/authorize?userauth_token=master-token"),
+            ),
+            (),
+            status=500,
+        ),
+    )
+    with pytest.raises(SmartTagsConnectionError) as err:
+        await async_create_web_session(hass, CREDENTIALS)
+    assert "master-token" not in str(err.value)
+    assert "status 500" in str(err.value)
+
+
+async def test_create_web_session_unexpected_status_names_step(hass, aioclient_mock):
+    aioclient_mock.get(
+        f"{AUTH_SERVER}/auth/oauth2/v2/authorize", status=302, headers={"Location": "https://account.samsung.com/consent?c=secret"}
+    )
+    with pytest.raises(SmartTagsConnectionError) as err:
+        await async_create_web_session(hass, CREDENTIALS)
+    assert str(err.value) == (
+        "Samsung authorization answered with status 302 (redirect: https://account.samsung.com/consent)"
+    )

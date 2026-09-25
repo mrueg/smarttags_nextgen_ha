@@ -7,6 +7,15 @@ _LOGGER = logging.getLogger(__name__)
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 
+def describe_error(err: Exception) -> str:
+    """Describe a request error without its URL and headers, which can contain the session or tokens."""
+    if isinstance(err, aiohttp.ClientResponseError):
+        return f"{type(err).__name__} (status {err.status})"
+    if isinstance(err, aiohttp.ClientError):
+        return type(err).__name__
+    return f"{type(err).__name__}: {err}"
+
+
 class SmartTagsAuthError(Exception):
     """Raised when Samsung rejects the JSESSIONID (expired or invalid session)."""
 
@@ -93,7 +102,7 @@ class SmartTagsAPI:
                     return
                 body = await resp.text()
         except (aiohttp.ClientError, TimeoutError) as err:
-            raise SmartTagsConnectionError(f"Error requesting CSRF token: {err!r}") from err
+            raise SmartTagsConnectionError(f"Error requesting CSRF token: {describe_error(err)}") from err
 
         # An unknown or expired session answers 200 with the body "fail" (and no _csrf header)
         if resp.status == 401 or (resp.status == 200 and body.strip() == "fail"):
@@ -116,7 +125,7 @@ class SmartTagsAPI:
                     raise SmartTagsConnectionError(f"getDeviceList answered with status {resp.status}")
                 data = await resp.json()
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
-            raise SmartTagsConnectionError(f"Error fetching device list: {err!r}") from err
+            raise SmartTagsConnectionError(f"Error fetching device list: {describe_error(err)}") from err
 
         if not isinstance(data, dict):
             raise SmartTagsConnectionError("getDeviceList returned an unexpected response")
@@ -141,6 +150,6 @@ class SmartTagsAPI:
                 data = await resp.json()
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             # A single tag failing keeps its previous state instead of failing the whole update
-            _LOGGER.debug("Error fetching state of %s: %r", device_id, err)
+            _LOGGER.debug("Error fetching state of %s: %s", device_id, describe_error(err))
             return None
         return data.get("operation", []) if isinstance(data, dict) else None

@@ -129,9 +129,11 @@ async def _async_try_validate(
     """Validate the data, recording a form error and returning None on failure."""
     try:
         return await validate_input(hass, data)
-    except InvalidAuth:
+    except InvalidAuth as err:
+        _LOGGER.warning("SmartThings Find rejected the login: %s", err.__cause__)
         errors["base"] = "invalid_auth"
-    except CannotConnect:
+    except CannotConnect as err:
+        _LOGGER.warning("Could not connect to SmartThings Find: %s", err.__cause__)
         errors["base"] = "cannot_connect"
     except Exception:  # pylint: disable=broad-except
         _LOGGER.exception("Unexpected exception occurred during validation")

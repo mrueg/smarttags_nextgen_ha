@@ -7,7 +7,7 @@ from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType, InvalidData
 
 from custom_components.smarttags_nextgen.account import InvalidRedirectError, PendingSignIn, SamsungSignInError
-from custom_components.smarttags_nextgen.api import SmartTagsAuthError
+from custom_components.smarttags_nextgen.api import SmartTagsAuthError, SmartTagsConnectionError
 from custom_components.smarttags_nextgen.const import DOMAIN
 
 from .common import (
@@ -270,3 +270,14 @@ async def test_reconfigure_region(hass, mock_devices, mock_sign_in):
     assert result["reason"] == "reconfigure_successful"
     await hass.async_block_till_done()
     assert entry.data == {"auth_method": "account", "region": "prd-xx", **ACCOUNT_CREDENTIALS}
+
+
+async def test_account_connection_error_is_logged(hass, mock_devices, mock_sign_in, caplog):
+    _, _, create_session = mock_sign_in
+    create_session.side_effect = SmartTagsConnectionError("getState answered with status 503")
+    result = await start_user_flow(hass, "account")
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"redirect_url": REDIRECT, "region": "prd-eu", "custom_region": ""}
+    )
+    assert result["errors"] == {"base": "cannot_connect"}
+    assert "Could not connect to SmartThings Find: getState answered with status 503" in caplog.text
