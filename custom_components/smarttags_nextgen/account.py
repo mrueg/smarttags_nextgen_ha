@@ -109,6 +109,9 @@ def _decrypt_auth_value(value: str, key: str) -> str:
 
 def _trusted_auth_server_url(value: str) -> str:
     """Only accept Samsung account servers, so the account token is never sent elsewhere."""
+    # The sign-in redirect contains the bare host name, e.g. eu-auth2.samsungosp.com
+    if "://" not in value:
+        value = f"https://{value}"
     try:
         parsed = urllib.parse.urlparse(value)
         port = parsed.port

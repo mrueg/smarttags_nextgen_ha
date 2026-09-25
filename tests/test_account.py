@@ -130,6 +130,26 @@ async def test_complete_sign_in(hass, aioclient_mock):
     assert posted["physical_address_text"] == "abcdef"
 
 
+async def test_complete_sign_in_bare_auth_server_host(hass, aioclient_mock):
+    """Samsung sends the auth server as a bare host name in the redirect."""
+    aioclient_mock.post(f"{AUTH_SERVER}/auth/oauth2/authenticate", json={"userauth_token": "T", "userId": 42})
+    pending = _pending()
+
+    credentials = await async_complete_sign_in(hass, pending, _redirect(pending, auth_server="eu-auth2.samsungosp.com"))
+
+    assert credentials["auth_server_url"] == AUTH_SERVER
+    assert str(aioclient_mock.mock_calls[0][1]) == f"{AUTH_SERVER}/auth/oauth2/authenticate"
+
+
+@pytest.mark.parametrize("auth_server", ["https://evil.example.com", "evil.example.com", "http://eu-auth2.samsungosp.com"])
+async def test_complete_sign_in_untrusted_server(hass, aioclient_mock, auth_server):
+    pending = _pending()
+    with pytest.raises(SamsungSignInError):
+        await async_complete_sign_in(hass, pending, _redirect(pending, auth_server=auth_server))
+    # the sign-in code is never sent to another server
+    assert not aioclient_mock.mock_calls
+
+
 async def test_complete_sign_in_invalid_redirect(hass, aioclient_mock):
     pending = _pending()
     with pytest.raises(InvalidRedirectError):
@@ -138,14 +158,6 @@ async def test_complete_sign_in_invalid_redirect(hass, aioclient_mock):
     other = PendingSignIn(url="", state="another-state-5678", code_verifier="", device_id="")
     with pytest.raises(InvalidRedirectError):
         await async_complete_sign_in(hass, pending, _redirect(other))
-    assert not aioclient_mock.mock_calls
-
-
-async def test_complete_sign_in_untrusted_server(hass, aioclient_mock):
-    pending = _pending()
-    with pytest.raises(SamsungSignInError):
-        await async_complete_sign_in(hass, pending, _redirect(pending, auth_server="https://evil.example.com"))
-    # the sign-in code is never sent to another server
     assert not aioclient_mock.mock_calls
 
 
