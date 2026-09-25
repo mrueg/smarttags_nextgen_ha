@@ -6,6 +6,18 @@ from pytest_homeassistant_custom_component.components.diagnostics import get_dia
 from .common import TAG_A, create_account_entry, create_entry
 
 
+def _values(data):
+    """All leaf values of nested dicts and lists."""
+    if isinstance(data, dict):
+        for value in data.values():
+            yield from _values(value)
+    elif isinstance(data, list):
+        for value in data:
+            yield from _values(value)
+    else:
+        yield data
+
+
 async def test_diagnostics_redacts_private_data(hass, hass_client, mock_devices):
     assert await async_setup_component(hass, "diagnostics", {})
     mock_devices.append(TAG_A)
@@ -31,7 +43,8 @@ async def test_diagnostics_redacts_private_data(hass, hass_client, mock_devices)
         "keys": ["extra", "horizontalUncertainty", "latitude", "longitude", "oprnType", "verticalUncertainty"],
         "extra_keys": ["gpsUtcDt"],
     }
-    assert "3.0" not in dumped and "4.0" not in dumped
+    # the coordinates (3.0, 4.0) don't appear anywhere, also not in the raw operations
+    assert not {3.0, 4.0, "3.0", "4.0"} & set(_values(diag))
 
 
 async def test_diagnostics_redacts_account_credentials(hass, hass_client, mock_devices):

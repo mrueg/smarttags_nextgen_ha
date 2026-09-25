@@ -112,6 +112,7 @@ async def test_reauth_success(hass, aioclient_mock):
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {"jsession_id": " new "})
     assert result["type"] == FlowResultType.ABORT
     assert result["reason"] == "reauth_successful"
+    await hass.async_block_till_done()
     assert entry.data == {"jsession_id": "new", "region": "prd-eu"}
 
 
