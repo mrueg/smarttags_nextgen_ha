@@ -2,6 +2,9 @@
 import base64
 import json
 import urllib.parse
+from unittest.mock import patch
+
+import aiohttp
 
 import pytest
 from cryptography.hazmat.primitives import padding, serialization
@@ -265,3 +268,55 @@ async def test_create_web_session_unexpected_status_names_step(hass, aioclient_m
     assert str(err.value) == (
         "Samsung authorization answered with status 302 (redirect: https://account.samsung.com/consent)"
     )
+
+
+async def test_create_web_session_ignores_cookie_deletion(hass, aioclient_mock):
+    """login.do sets the new session, then deletes a .samsung.com JSESSIONID with an empty value."""
+    aioclient_mock.get(f"{AUTH_SERVER}/auth/oauth2/v2/authorize", json={"code": "web-code"})
+    aioclient_mock.get(f"{FIND}/getState.do", json={"state": "server-state"}, cookies={"JSESSIONID": "bootstrap"})
+    aioclient_mock.get(
+        f"{FIND}/login.do",
+        status=302,
+        headers=[
+            ("Location", "https://smartthingsfind.samsung.com"),
+            ("Set-Cookie", "JSESSIONID=new-session; Path=/; HttpOnly;HttpOnly;Secure"),
+            (
+                "Set-Cookie",
+                'JSESSIONID=""; Domain=.samsung.com; Expires=Thu, 01 Jan 1970 00:00:10 GMT; Path=/;HttpOnly;Secure',
+            ),
+        ],
+    )
+    assert await async_create_web_session(hass, CREDENTIALS) == "new-session"
+
+
+async def test_web_login_uses_own_cookie_jar(hass, aioclient_mock):
+    """The shared session may hold an old SmartThings Find cookie, which stops getState.do from starting a session."""
+    from homeassistant.helpers import aiohttp_client
+
+    from custom_components.smarttags_nextgen import account
+
+    aioclient_mock.get(f"{AUTH_SERVER}/auth/oauth2/v2/authorize", json={"code": "web-code"})
+    _mock_web_login(aioclient_mock)
+    sessions = []
+
+    def create(hass, **kwargs):
+        session = aiohttp_client.async_create_clientsession(hass, **kwargs)
+        sessions.append((session, kwargs))
+        return session
+
+    with patch.object(account, "async_create_clientsession", create):
+        assert await async_create_web_session(hass, CREDENTIALS) == "new-session"
+    ((session, kwargs),) = sessions
+    assert kwargs["auto_cleanup"] is False
+    assert isinstance(kwargs["cookie_jar"], aiohttp.CookieJar)
+    assert kwargs["cookie_jar"] is not aiohttp_client.async_get_clientsession(hass).cookie_jar
+    # detached again, without closing Home Assistant's shared connection pool
+    assert session.connector is None
+    assert not aiohttp_client.async_get_clientsession(hass).closed
+
+
+async def test_create_web_session_without_new_session(hass, aioclient_mock):
+    aioclient_mock.get(f"{AUTH_SERVER}/auth/oauth2/v2/authorize", json={"code": "web-code"})
+    aioclient_mock.get(f"{FIND}/getState.do", json={"state": "server-state"})
+    with pytest.raises(SmartTagsConnectionError, match="getState did not start a new session"):
+        await async_create_web_session(hass, CREDENTIALS)

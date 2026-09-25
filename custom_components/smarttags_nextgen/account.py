@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import secrets
+from http.cookies import CookieError, SimpleCookie
 import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping
@@ -26,7 +27,7 @@ from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.serialization import load_der_public_key
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.aiohttp_client import async_create_clientsession, async_get_clientsession
 
 from .api import SmartTagsAuthError, SmartTagsConnectionError, describe_error
 
@@ -269,8 +270,73 @@ def _describe_location(resp: aiohttp.ClientResponse) -> str:
 
 
 def _session_cookie(resp: aiohttp.ClientResponse) -> str | None:
+    """The JSESSIONID the response sets.
+
+    login.do sets the new session and then deletes a JSESSIONID on .samsung.com with an
+    empty value; resp.cookies only keeps the last one, so all Set-Cookie headers are read.
+    """
+    for header in reversed(resp.headers.getall("Set-Cookie", [])):
+        cookie = SimpleCookie()
+        try:
+            cookie.load(header)
+        except CookieError:
+            continue
+        if "JSESSIONID" in cookie and cookie["JSESSIONID"].value:
+            return cookie["JSESSIONID"].value
     cookie = resp.cookies.get("JSESSIONID")
     return cookie.value if cookie and cookie.value else None
+
+
+async def _async_web_login(hass: HomeAssistant, auth_server: str, code: str, code_expires_in: Any) -> str | None:
+    """Exchange the authorization code for a SmartThings Find JSESSIONID.
+
+    This runs in its own HTTP session with an empty cookie jar: Home Assistant's shared
+    session keeps cookies, and if it already has a SmartThings Find cookie (e.g. from
+    the region lookup), getState.do does not issue the new session the login needs.
+    """
+    web = async_create_clientsession(hass, auto_cleanup=False, cookie_jar=aiohttp.CookieJar())
+    try:
+        # The web login requires the state and cookie from getState.do of the same session
+        async with web.get(
+            f"{FIND_URL}/getState.do", params={"payload": "hound"}, allow_redirects=False, timeout=REQUEST_TIMEOUT
+        ) as resp:
+            if resp.status != 200:
+                raise SmartTagsConnectionError(f"getState answered with status {resp.status}")
+            state_data = await resp.json(content_type=None)
+            login_state = state_data.get("state") if isinstance(state_data, dict) else None
+            bootstrap_cookie = _session_cookie(resp)
+        if not login_state:
+            raise SmartTagsConnectionError("getState did not return a login state")
+        if not bootstrap_cookie:
+            raise SmartTagsConnectionError("getState did not start a new session")
+
+        auth_host = urllib.parse.urlparse(auth_server).netloc
+        async with web.get(
+            f"{FIND_URL}/login.do",
+            params={
+                "auth_server_url": auth_host,
+                "api_server_url": auth_host,
+                "code": code,
+                "code_expires_in": str(code_expires_in),
+                "state": login_state,
+            },
+            headers={"Cookie": f"JSESSIONID={bootstrap_cookie}"},
+            allow_redirects=False,
+            timeout=REQUEST_TIMEOUT,
+        ) as resp:
+            if resp.status in (301, 302, 303, 307):
+                # A relative redirect stays on SmartThings Find
+                location = urllib.parse.urlparse(urllib.parse.urljoin(f"{FIND_URL}/", resp.headers.get("Location", "")))
+                if location.scheme != "https" or location.hostname != "smartthingsfind.samsung.com":
+                    raise SmartTagsConnectionError(
+                        f"SmartThings Find login redirected to an unexpected destination: {_describe_location(resp)}"
+                    )
+            elif resp.status != 200:
+                raise SmartTagsConnectionError(f"SmartThings Find login answered with status {resp.status}")
+            return _session_cookie(resp)
+    finally:
+        # Only detach: the session shares Home Assistant's connection pool
+        web.detach()
 
 
 async def async_create_web_session(hass: HomeAssistant, credentials: Mapping[str, Any]) -> str:
@@ -315,42 +381,7 @@ async def async_create_web_session(hass: HomeAssistant, credentials: Mapping[str
         if not code:
             raise SmartTagsAuthError("Samsung did not return an authorization code")
 
-        # The web login requires the state and cookie from getState.do of the same session
-        async with session.get(
-            f"{FIND_URL}/getState.do", params={"payload": "hound"}, allow_redirects=False, timeout=REQUEST_TIMEOUT
-        ) as resp:
-            if resp.status != 200:
-                raise SmartTagsConnectionError(f"getState answered with status {resp.status}")
-            state_data = await resp.json(content_type=None)
-            login_state = state_data.get("state") if isinstance(state_data, dict) else None
-            bootstrap_cookie = _session_cookie(resp)
-        if not login_state or not bootstrap_cookie:
-            raise SmartTagsConnectionError("getState did not return a login state")
-
-        auth_host = urllib.parse.urlparse(auth_server).netloc
-        async with session.get(
-            f"{FIND_URL}/login.do",
-            params={
-                "auth_server_url": auth_host,
-                "api_server_url": auth_host,
-                "code": code,
-                "code_expires_in": str(auth_data.get("code_expires_in", 300)),
-                "state": login_state,
-            },
-            headers={"Cookie": f"JSESSIONID={bootstrap_cookie}"},
-            allow_redirects=False,
-            timeout=REQUEST_TIMEOUT,
-        ) as resp:
-            if resp.status in (301, 302, 303, 307):
-                # A relative redirect stays on SmartThings Find
-                location = urllib.parse.urlparse(urllib.parse.urljoin(f"{FIND_URL}/", resp.headers.get("Location", "")))
-                if location.scheme != "https" or location.hostname != "smartthingsfind.samsung.com":
-                    raise SmartTagsConnectionError(
-                        f"SmartThings Find login redirected to an unexpected destination: {_describe_location(resp)}"
-                    )
-            elif resp.status != 200:
-                raise SmartTagsConnectionError(f"SmartThings Find login answered with status {resp.status}")
-            jsession_id = _session_cookie(resp)
+        jsession_id = await _async_web_login(hass, auth_server, code, auth_data.get("code_expires_in", 300))
     except (aiohttp.ClientError, TimeoutError, ValueError) as err:
         raise SmartTagsConnectionError(f"Error creating a SmartThings Find session: {describe_error(err)}") from err
 
