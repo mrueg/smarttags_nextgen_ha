@@ -56,12 +56,21 @@ class SmartTagsAPI:
         self._session_factory = session_factory
 
     @property
+    def cookies(self) -> Dict[str, str]:
+        """The session cookie, passed per request.
+
+        A Cookie header would be overridden by a JSESSIONID in the cookie jar of Home
+        Assistant's shared session (e.g. an anonymous one Samsung set earlier), while
+        cookies passed with the request take precedence over the jar.
+        """
+        return {"JSESSIONID": self.jsession_id or ""}
+
+    @property
     def headers(self) -> Dict[str, str]:
         """Dynamically build HTTP headers to ensure the current region is evaluated on every request."""
         return {
             "accept": "application/json, text/plain, */*",
             "accept-language": "en-US,en;q=0.9,he;q=0.8,ja;q=0.7",
-            "Cookie": f"JSESSIONID={self.jsession_id}",
             "origin": "https://smartthingsfind.samsung.com",
             "priority": "u=1, i",
             "referer": "https://smartthingsfind.samsung.com/",
@@ -94,7 +103,7 @@ class SmartTagsAPI:
         """Fetch a fresh CSRF token from the chkLogin endpoint."""
         url = "https://smartthingsfind.samsung.com/chkLogin.do"
         try:
-            async with self.session.get(url, headers=self.headers, timeout=REQUEST_TIMEOUT) as resp:
+            async with self.session.get(url, headers=self.headers, cookies=self.cookies, timeout=REQUEST_TIMEOUT) as resp:
                 csrf = resp.headers.get("_csrf") or resp.headers.get("X-CSRF-TOKEN")
                 if csrf:
                     self.csrf_token = csrf
@@ -118,7 +127,9 @@ class SmartTagsAPI:
         headers = {**self.headers, "content-type": "application/json"}
 
         try:
-            async with self.session.post(url, headers=headers, json={}, timeout=REQUEST_TIMEOUT) as resp:
+            async with self.session.post(
+                url, headers=headers, cookies=self.cookies, json={}, timeout=REQUEST_TIMEOUT
+            ) as resp:
                 if resp.status == 401:
                     raise SmartTagsAuthError("getDeviceList rejected the JSESSIONID")
                 if resp.status != 200:
@@ -143,7 +154,9 @@ class SmartTagsAPI:
         payload = {"dvceId": device_id}
 
         try:
-            async with self.session.post(url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT) as resp:
+            async with self.session.post(
+                url, headers=headers, cookies=self.cookies, json=payload, timeout=REQUEST_TIMEOUT
+            ) as resp:
                 if resp.status != 200:
                     _LOGGER.debug("setLastSelect for %s answered with status %s", device_id, resp.status)
                     return None

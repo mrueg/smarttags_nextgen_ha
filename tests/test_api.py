@@ -14,7 +14,7 @@ from custom_components.smarttags_nextgen.api import (
 )
 from custom_components.smarttags_nextgen.const import DOMAIN
 
-from .common import TAG_A, create_entry
+from .common import TAG_A, create_entry, record_cookies
 
 BASE = "https://smartthingsfind.samsung.com"
 CHK = f"{BASE}/chkLogin.do"
@@ -31,12 +31,25 @@ def api(hass):
 
 
 async def test_csrf_ok(hass, aioclient_mock):
+    cookies = record_cookies(aioclient_mock)
     ok_login(aioclient_mock)
     client = api(hass)
     await client.refresh_csrf_token()
     assert client.csrf_token == "token"
-    headers = aioclient_mock.mock_calls[0][3]
-    assert headers["Cookie"] == "JSESSIONID=session"
+    # passed as request cookies, which override cookies stored in the shared session
+    assert cookies == [(CHK, {"JSESSIONID": "session"})]
+    assert "Cookie" not in aioclient_mock.mock_calls[0][3]
+
+
+async def test_requests_pass_session_cookie(hass, aioclient_mock):
+    cookies = record_cookies(aioclient_mock)
+    aioclient_mock.post(LIST, json={"deviceList": []})
+    aioclient_mock.post(SELECT, json={"operation": []})
+    client = api(hass)
+    client.csrf_token = "token"
+    await client.get_devices()
+    await client.set_last_select("a")
+    assert [c for _, c in cookies] == [{"JSESSIONID": "session"}] * 2
 
 
 async def test_csrf_rejected_session(hass, aioclient_mock):

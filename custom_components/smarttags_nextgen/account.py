@@ -320,7 +320,7 @@ async def _async_web_login(hass: HomeAssistant, auth_server: str, code: str, cod
                 "code_expires_in": str(code_expires_in),
                 "state": login_state,
             },
-            headers={"Cookie": f"JSESSIONID={bootstrap_cookie}"},
+            cookies={"JSESSIONID": bootstrap_cookie},
             allow_redirects=False,
             timeout=REQUEST_TIMEOUT,
         ) as resp:

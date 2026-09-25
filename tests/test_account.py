@@ -24,6 +24,8 @@ from custom_components.smarttags_nextgen.account import (
 )
 from custom_components.smarttags_nextgen.api import SmartTagsAuthError, SmartTagsConnectionError
 
+from .common import record_cookies
+
 AUTH_SERVER = "https://eu-auth2.samsungosp.com"
 FIND = "https://smartthingsfind.samsung.com"
 CREDENTIALS = {
@@ -179,6 +181,7 @@ def _mock_web_login(aioclient_mock, login_status=302, location=f"{FIND}/"):
 
 
 async def test_create_web_session(hass, aioclient_mock):
+    cookies = record_cookies(aioclient_mock)
     aioclient_mock.get(f"{AUTH_SERVER}/auth/oauth2/v2/authorize", json={"code": "web-code"})
     _mock_web_login(aioclient_mock)
 
@@ -191,7 +194,7 @@ async def test_create_web_session(hass, aioclient_mock):
     assert login[1].query["code"] == "web-code"
     assert login[1].query["auth_server_url"] == "eu-auth2.samsungosp.com"
     # the login has to use the cookie of getState.do
-    assert login[3]["Cookie"] == "JSESSIONID=bootstrap"
+    assert cookies[2] == (f"{FIND}/login.do", {"JSESSIONID": "bootstrap"})
 
 
 async def test_create_web_session_privacy_retry(hass, aioclient_mock):

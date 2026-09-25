@@ -9,7 +9,7 @@ from custom_components.smarttags_nextgen.account import PendingSignIn
 from custom_components.smarttags_nextgen.const import DOMAIN
 from custom_components.smarttags_nextgen.coordinator import parse_stf_date
 
-from .common import PHONE, TAG_A, TAG_B, create_account_entry, create_entry, start_user_flow
+from .common import PHONE, TAG_A, TAG_B, create_account_entry, create_entry, record_cookies, start_user_flow
 
 
 def test_parse_stf_date():
@@ -149,6 +149,7 @@ async def test_last_known_location(hass, mock_devices):
 
 async def test_setup_with_account(hass, aioclient_mock):
     """Entries using the account sign-in create their session from the account token."""
+    cookies = record_cookies(aioclient_mock)
     aioclient_mock.get("https://smartthingsfind.samsung.com/chkLogin.do", text="", headers={"_csrf": "token"})
     aioclient_mock.post("https://smartthingsfind.samsung.com/device/getDeviceList.do", json={"deviceList": [TAG_A]})
     aioclient_mock.post("https://smartthingsfind.samsung.com/device/setLastSelect.do", json={"operation": []})
@@ -160,7 +161,7 @@ async def test_setup_with_account(hass, aioclient_mock):
         await hass.async_block_till_done()
 
     create_session.assert_awaited_once_with(hass, entry.data)
-    assert aioclient_mock.mock_calls[0][3]["Cookie"] == "JSESSIONID=created-session"
+    assert cookies[0][1] == {"JSESSIONID": "created-session"}
     assert len(hass.states.async_all("device_tracker")) == 1
 
 

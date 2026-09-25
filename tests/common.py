@@ -71,3 +71,16 @@ def create_account_entry(hass, unique_id="12345"):
     )
     entry.add_to_hass(hass)
     return entry
+
+
+def record_cookies(aioclient_mock):
+    """Record the cookies passed with each mocked request (the mock itself only records headers)."""
+    calls = []
+    match_request = aioclient_mock.match_request
+
+    async def record(method, url, **kwargs):
+        calls.append((str(url), kwargs.get("cookies")))
+        return await match_request(method, url, **kwargs)
+
+    aioclient_mock.match_request = record
+    return calls
