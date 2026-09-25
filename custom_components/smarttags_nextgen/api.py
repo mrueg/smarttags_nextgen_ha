@@ -40,6 +40,10 @@ async def async_get_server_region(session: aiohttp.ClientSession) -> Optional[st
         return None
 
 
+class SmartTagsOperationError(Exception):
+    """Raised when Samsung rejects an operation such as ringing a tag."""
+
+
 class SmartTagsAPI:
     def __init__(
         self,
@@ -166,3 +170,68 @@ class SmartTagsAPI:
             _LOGGER.debug("Error fetching state of %s: %s", device_id, describe_error(err))
             return None
         return data.get("operation", []) if isinstance(data, dict) else None
+
+    async def _post_operation_request(self, path: str, payload: Dict[str, Any], step: str) -> Dict[str, Any]:
+        if not self.csrf_token:
+            raise SmartTagsConnectionError(f"Cannot {step}: CSRF token is missing or uninitialized")
+        url = f"https://smartthingsfind.samsung.com{path}?_csrf={self.csrf_token}"
+        headers = {**self.headers, "content-type": "application/json"}
+        try:
+            async with self.session.post(
+                url, headers=headers, cookies=self.cookies, json=payload, timeout=REQUEST_TIMEOUT
+            ) as resp:
+                if resp.status == 401:
+                    raise SmartTagsAuthError(f"{step} rejected the JSESSIONID")
+                if resp.status != 200:
+                    raise SmartTagsConnectionError(f"{step} answered with status {resp.status}")
+                data = await resp.json(content_type=None)
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            raise SmartTagsConnectionError(f"Error during {step}: {describe_error(err)}") from err
+        if not isinstance(data, dict):
+            raise SmartTagsConnectionError(f"{step} returned an unexpected response")
+        return data
+
+    async def add_operation(
+        self, device_id: str, user_id: Optional[str], operation: str, extra: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Ask a device to perform an operation (e.g. LOCATION or RING) and return its request id."""
+        payload = {"dvceId": device_id, "operation": operation, "usrId": user_id, **(extra or {})}
+        data = await self._post_operation_request("/dm/addOperation.do", payload, f"{operation} request")
+        if data.get("resultCode") != "00":
+            raise SmartTagsOperationError(f"Samsung rejected the {operation} request ({data.get('resultCode')})")
+        if not data.get("reqId"):
+            raise SmartTagsOperationError(f"Samsung accepted the {operation} request without a request id")
+        return str(data["reqId"])
+
+    async def get_operation_status(
+        self, device_id: str, user_id: Optional[str], operation: str, request_id: str
+    ) -> str:
+        """Return "success", "failed" or "pending" for an operation started with add_operation."""
+        payload = {"dvceId": device_id, "operation": [operation], "userId": user_id}
+        data = await self._post_operation_request("/dm/getOperationResult.do", payload, f"{operation} result")
+        results = [
+            entry
+            for entry in data.get("operation") or []
+            if isinstance(entry, dict) and entry.get("oprnType") == operation and str(entry.get("reqId")) == request_id
+        ]
+        if not results:
+            return OPERATION_PENDING
+        return operation_status(results[-1])
+
+
+OPERATION_SUCCESS = "success"
+OPERATION_FAILED = "failed"
+OPERATION_PENDING = "pending"
+
+
+def operation_status(entry: Dict[str, Any]) -> str:
+    """Map the status codes of an operation result, as the SmartThings Find website does."""
+    status = entry.get("oprnStsCd") or entry.get("status_code") or entry.get("statusCode")
+    result = entry.get("oprnResultCode") or entry.get("result_code") or entry.get("resultCode")
+    status = str(status) if status is not None else None
+    result = str(result) if result is not None else None
+    if (status == "2800" and result == "1200") or status in {"200", "SUCCESS", "00"}:
+        return OPERATION_SUCCESS
+    if status is None or status in {"1000", "1100", "2100", "PENDING", "IN_PROGRESS", "RUNNING"}:
+        return OPERATION_PENDING
+    return OPERATION_FAILED

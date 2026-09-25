@@ -1,13 +1,25 @@
+import asyncio
 import logging
 import html
+import time
 from datetime import datetime, timedelta, timezone
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from .api import SmartTagsAPI, SmartTagsAuthError, SmartTagsConnectionError
+from .api import (
+    OPERATION_PENDING,
+    SmartTagsAPI,
+    SmartTagsAuthError,
+    SmartTagsConnectionError,
+    SmartTagsOperationError,
+)
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
+# How long to wait for a requested location, and how often to check for it
+LOCATION_TIMEOUT = 180
+LOCATION_POLL_INTERVAL = 5
 
 
 def calc_gps_accuracy(horizontal, vertical):
@@ -84,6 +96,8 @@ class SmartTagCoordinator(DataUpdateCoordinator):
                 "device_id": device_id,
                 "name": name,
                 "model": html.unescape(html.unescape(tag["modelName"])) if tag.get("modelName") else None,
+                # Account the tag belongs to, which differs for tags shared with this account
+                "user_id": tag.get("usrId"),
                 "latitude": old_tag_data.get("latitude"),
                 "longitude": old_tag_data.get("longitude"),
                 "battery": old_tag_data.get("battery"),
@@ -137,3 +151,46 @@ class SmartTagCoordinator(DataUpdateCoordinator):
             normalized_data[device_id] = tag_data
 
         return normalized_data
+
+    async def async_start_operation(self, device_id, operation, extra=None):
+        """Ask a tag to perform an operation (LOCATION, RING) and return the request id."""
+        user_id = (self.data or {}).get(device_id, {}).get("user_id")
+        try:
+            # Also creates a new session if it expired and the account sign-in is used
+            await self.api.refresh_csrf_token()
+            return await self.api.add_operation(device_id, user_id, operation, extra)
+        except SmartTagsAuthError as err:
+            self.config_entry.async_start_reauth(self.hass)
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="session_expired"
+            ) from err
+        except (SmartTagsConnectionError, SmartTagsOperationError) as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="operation_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
+
+    async def async_request_location(self, device_id):
+        """Ask a tag for a new location and update the entities once it arrived."""
+        request_id = await self.async_start_operation(device_id, "LOCATION")
+        self.config_entry.async_create_background_task(
+            self.hass,
+            self._async_wait_for_location(device_id, request_id),
+            name=f"{DOMAIN} location request {device_id}",
+        )
+
+    async def _async_wait_for_location(self, device_id, request_id):
+        user_id = (self.data or {}).get(device_id, {}).get("user_id")
+        deadline = time.monotonic() + LOCATION_TIMEOUT
+        status = OPERATION_PENDING
+        while status == OPERATION_PENDING and time.monotonic() < deadline:
+            await asyncio.sleep(LOCATION_POLL_INTERVAL)
+            try:
+                status = await self.api.get_operation_status(device_id, user_id, "LOCATION", request_id)
+            except (SmartTagsAuthError, SmartTagsConnectionError) as err:
+                _LOGGER.debug("Could not check the location request for %s: %s", device_id, err)
+                break
+        _LOGGER.debug("Location request for %s finished: %s", device_id, status)
+        # Fetch the location, which the tag reported if the request succeeded
+        await self.async_request_refresh()
