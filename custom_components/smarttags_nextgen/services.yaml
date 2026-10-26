@@ -1,0 +1,7 @@
+locate:
+  target:
+    device:
+      integration: smarttags_nextgen
+    entity:
+      integration: smarttags_nextgen
+refresh:
