@@ -2,7 +2,7 @@
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
-from homeassistant.helpers.service import async_extract_referenced_entity_ids
+from homeassistant.helpers.target import TargetSelection, async_extract_referenced_entity_ids
 from .const import DOMAIN
 
 SERVICE_LOCATE = "locate"
@@ -45,7 +45,7 @@ def _targeted_tags(hass, call):
     entity_registry = er.async_get(hass)
     device_registry = dr.async_get(hass)
     coordinators = {entry.entry_id: entry.runtime_data for entry in hass.config_entries.async_loaded_entries(DOMAIN)}
-    selected = async_extract_referenced_entity_ids(hass, call)
+    selected = async_extract_referenced_entity_ids(hass, TargetSelection(call.data))
     tags = {}
     for entity_id in selected.referenced | selected.indirectly_referenced:
         entity = entity_registry.async_get(entity_id)
