@@ -52,11 +52,11 @@ async def test_locate_entity(hass, mock_devices, aioclient_mock):
 
 
 async def test_locate_devices(hass, mock_devices, aioclient_mock):
-    await _setup(hass, mock_devices)
+    entry = await _setup(hass, mock_devices)
     aioclient_mock.post(ADD, json={"resultCode": "00"})
     aioclient_mock.post(TAG_LOCATION, json={"operation": []})
     registry = dr.async_get(hass)
-    device_ids = [registry.async_get_device(identifiers={(DOMAIN, tag)}).id for tag in ("a", "b")]
+    device_ids = [registry.async_get_device_by_identifier((DOMAIN, tag), entry.entry_id).id for tag in ("a", "b")]
 
     with patch(WAIT, 0):
         # several entities of the same tag request its location once
@@ -67,8 +67,8 @@ async def test_locate_devices(hass, mock_devices, aioclient_mock):
 
 
 async def test_locate_without_tags(hass, mock_devices, aioclient_mock):
-    await _setup(hass, mock_devices)
-    phone = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, "p")})
+    entry = await _setup(hass, mock_devices)
+    phone = dr.async_get(hass).async_get_device_by_identifier((DOMAIN, "p"), entry.entry_id)
     with pytest.raises(ServiceValidationError) as err:
         await _locate(hass, {"device_id": phone.id})
     assert err.value.translation_key == "no_tags_targeted"
